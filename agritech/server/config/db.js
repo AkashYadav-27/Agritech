@@ -1,22 +1,52 @@
 const mongoose = require('mongoose');
-const path = require('path');
-const fs = require('fs');
+
+const MONGO_URI =
+  process.env.MONGO_URI ||
+  (process.env.NODE_ENV !== 'production'
+    ? 'mongodb://127.0.0.1:27017/agritech'
+    : null);
+
+// Reuse database connection across serverless invocations
+let cached = global.mongoose;
+
+if (!cached) {
+  cached = global.mongoose = {
+    conn: null,
+    promise: null,
+  };
+}
 
 module.exports = async function connectDB() {
-  const uri = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/agritech';
-  try {
-    await mongoose.connect(uri, { serverSelectionTimeoutMS: 4000 });
-    console.log('MongoDB connected:', uri.replace(/\/\/.*@/, '//***@'));
-  } catch (e) {
-    console.log('MongoDB not reachable (' + e.message + ').');
-    console.log('Starting embedded MongoDB (first run downloads the binary, please wait)...');
-    const { MongoMemoryServer } = require('mongodb-memory-server');
-    const dbPath = path.join(__dirname, '..', 'data', 'mongo');
-    fs.mkdirSync(dbPath, { recursive: true });
-    const mongod = await MongoMemoryServer.create({
-      instance: { dbPath, storageEngine: 'wiredTiger', port: 27018 },
-    });
-    await mongoose.connect(mongod.getUri('agritech'));
-    console.log('Embedded MongoDB connected. Data stored in', dbPath);
+  // Return existing connection if already connected
+  if (cached.conn && mongoose.connection.readyState === 1) {
+    return cached.conn;
   }
+
+  // Production must use MongoDB Atlas
+  if (!MONGO_URI) {
+    throw new Error(
+      'MONGO_URI is missing. Configure MongoDB Atlas connection string.'
+    );
+  }
+
+  // Create connection only once
+  if (!cached.promise) {
+    cached.promise = mongoose
+      .connect(MONGO_URI, {
+        serverSelectionTimeoutMS: 10000,
+        maxPoolSize: 10,
+      })
+      .then((mongooseInstance) => {
+        console.log('MongoDB connected successfully');
+        return mongooseInstance;
+      })
+      .catch((error) => {
+        cached.promise = null;
+        throw error;
+      });
+  }
+
+  cached.conn = await cached.promise;
+
+  return cached.conn;
 };
